@@ -24,7 +24,6 @@ class StatisticsTab(QWidget):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        # --- 1. Biểu đồ Real-time (Trạng thái bất thường theo thời gian) ---
         layout.addWidget(QLabel("Real-time Anomalies (Live):"))
         self.line_fig = Figure(figsize=(5, 4), dpi=70)
         self.line_canvas = FigureCanvas(self.line_fig)
@@ -33,20 +32,17 @@ class StatisticsTab(QWidget):
         self.ax_line.set_yticks([0, 1, 2])
         self.ax_line.set_yticklabels(['Safe', 'Warning', 'Danger'])
 
-        # Dữ liệu cho biểu đồ đường
         self.x_data = list(range(50))
         self.y_data = [0] * 50
         self.line_plot, = self.ax_line.plot(self.x_data, self.y_data, 'r-')
         layout.addWidget(self.line_canvas)
 
-        # --- 2. Biểu đồ tròn (Tỉ lệ vi phạm trong phiên làm việc) ---
         layout.addWidget(QLabel("Violation Distribution (%):"))
         self.pie_fig = Figure(figsize=(5, 4), dpi=70)
         self.pie_canvas = FigureCanvas(self.pie_fig)
         self.ax_pie = self.pie_fig.add_subplot(111)
         layout.addWidget(self.pie_canvas)
 
-        # Bộ đếm thống kê cho biểu đồ tròn
         self.stats_counts = {"DANGER": 0, "WARNING": 0, "SAFE": 0}
 
     def update_charts(self, current_state):
@@ -121,6 +117,7 @@ class SettingsTab(QWidget):
         layout.addWidget(QLabel("Alarm Volume:"))
         self.vol_slider = QSlider(Qt.Horizontal)
         self.vol_slider.setValue(70)
+        self.vol_slider.valueChanged.connect(self.update_volume)
         layout.addWidget(self.vol_slider)
 
         # 4. Chế độ tối (Dark Mode)
@@ -139,6 +136,17 @@ class SettingsTab(QWidget):
         val = value / 10.0
         self.detector.DANGER_DELAY = val
         self.delay_label.setText(f"{val}s")
+
+    def update_volume(self, value):
+
+        volume_level = value / 100.0
+
+        if hasattr(self.detector, 'sound_danger'):
+            self.detector.sound_danger.set_volume(volume_level)
+
+        if hasattr(self.detector, 'sound_warning'):
+            self.detector.sound_warning.set_volume(volume_level)
+
 
     def toggle_dark_mode(self, state):
         if state == Qt.Checked:

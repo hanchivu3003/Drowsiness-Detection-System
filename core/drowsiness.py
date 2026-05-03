@@ -1,4 +1,5 @@
 import time
+import pygame
 
 
 class DrowsinessDetector:
@@ -11,6 +12,12 @@ class DrowsinessDetector:
 
         self.danger_end_time = 0
         self.DANGER_DELAY = 3.0
+        #am thanh
+        pygame.mixer.init()
+        self.sound_warning = pygame.mixer.Sound("assets/sounds/warning.wav")
+        self.sound_danger = pygame.mixer.Sound("assets/sounds/danger.wav")
+
+        self.is_playing = False
 
         # Các ngưỡng cấu hình
         self.EYE_CLOSED_THRESHOLD = 1.0  # Nhắm mắt quá 1 giây -> Danger
@@ -26,6 +33,19 @@ class DrowsinessDetector:
             0: 'OpenEye', 1: 'CloseEye', 2: 'NoYawn', 3: 'Yawn',
             4: 'Focused', 5: 'HeadLeft', 6: 'HeadRight', 7: 'HeadBack', 8: 'HeadDown'
         }
+
+    def play_alarm(self, state):
+        # Nếu người dùng tắt âm thanh trong tab Settings thì không phát
+        # (Giả sử bạn có biến self.enable_sound)
+
+        if state == "DANGER":
+            if not pygame.mixer.Channel(0).get_busy():  # Nếu kênh chưa bận thì mới phát
+                pygame.mixer.Channel(0).play(self.sound_danger, loops=-1)  # loops=-1 để lặp vô tận
+        elif state == "WARNING":
+            if not pygame.mixer.Channel(0).get_busy():
+                pygame.mixer.Channel(0).play(self.sound_warning)
+        else:
+            pygame.mixer.Channel(0).stop()
 
     def update(self, results):
         current_time = time.time()
