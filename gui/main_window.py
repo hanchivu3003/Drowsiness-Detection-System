@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QTabWidget, QSlider, QCheckBox, QListWidget
+from datetime import datetime
 import cv2
 
 from core.vision import VisionSystem
@@ -15,6 +16,7 @@ matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
+import time
 
 
 class StatisticsTab(QWidget):
@@ -28,13 +30,24 @@ class StatisticsTab(QWidget):
         self.line_fig = Figure(figsize=(5, 4), dpi=70)
         self.line_canvas = FigureCanvas(self.line_fig)
         self.ax_line = self.line_fig.add_subplot(111)
-        self.ax_line.set_ylim(-0.5, 2.5)
+        self.ax_line.set_ylim(2.5, -0.5)
         self.ax_line.set_yticks([0, 1, 2])
         self.ax_line.set_yticklabels(['Safe', 'Warning', 'Danger'])
 
-        self.x_data = list(range(50))
-        self.y_data = [0] * 50
-        self.line_plot, = self.ax_line.plot(self.x_data, self.y_data, 'r-')
+        # line chart
+        self.times = []  # lưu timestamp
+        self.states = []  # lưu state (0,1,2)
+        # line nối
+        self.line_plot, = self.ax_line.plot([], [], linewidth=1)
+        # scatter (các chấm)
+        self.scatter = self.ax_line.scatter([], [], s=50)
+
+        # time chart
+        self.start_time = time.time()
+        self.ax_line.set_xlim(0, 60)  # 60 giây gần nhất
+        self.ax_line.set_xlabel("Time (s)")
+
+
         layout.addWidget(self.line_canvas)
 
         layout.addWidget(QLabel("Violation Distribution (%):"))
@@ -46,17 +59,46 @@ class StatisticsTab(QWidget):
         self.stats_counts = {"DANGER": 0, "WARNING": 0, "SAFE": 0}
 
     def update_charts(self, current_state):
-        # Cập nhật dữ liệu biểu đồ đường
+
         state_map = {"SAFE": 0, "WARNING": 1, "DANGER": 2}
+        color_map = {0: "green", 1: "orange", 2: "red"}
+
+        now = time.time() - self.start_time
         new_val = state_map.get(current_state, 0)
 
-        self.y_data.pop(0)
-        self.y_data.append(new_val)
-        self.line_plot.set_ydata(self.y_data)
-        self.ax_line.relim()
-        self.line_canvas.draw()
+        # ===== Logic 1 phút =====
+        if len(self.states) > 0:
+            last_time = self.times[-1]
+            last_state = self.states[-1]
 
-        # Cập nhật dữ liệu biểu đồ tròn
+            # nếu cùng trạng thái và chưa quá 60s → update chấm cuối
+            if new_val == last_state and (now - last_time) < 60:
+                self.times[-1] = now
+            else:
+                self.times.append(now)
+                self.states.append(new_val)
+        else:
+            self.times.append(now)
+            self.states.append(new_val)
+
+        # ===== Giữ dữ liệu trong 60s =====
+        while len(self.times) > 0 and (now - self.times[0]) > 60:
+            self.times.pop(0)
+            self.states.pop(0)
+
+        # update line
+        self.line_plot.set_data(self.times, self.states)
+
+        colors = [color_map[s] for s in self.states]
+        self.scatter.set_offsets(np.c_[self.times, self.states])
+        self.scatter.set_color(colors)
+        # x
+        self.ax_line.set_xlim(max(0, now - 60), now)
+        self.ax_line.set_ylim(-0.5, 2.5)
+
+        self.line_canvas.draw_idle()
+
+        # ===== Pie chart =====
         self.stats_counts[current_state] += 1
         self.draw_pie_chart()
 
@@ -69,7 +111,7 @@ class StatisticsTab(QWidget):
         if sum(sizes) > 0:
             self.ax_pie.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors, startangle=140)
             self.ax_pie.axis('equal')
-        self.pie_canvas.draw()
+        self.pie_canvas.draw_idle()
 
 
 class SettingsTab(QWidget):
@@ -81,7 +123,6 @@ class SettingsTab(QWidget):
         self.setLayout(layout)
 
         # 1. Điều chỉnh thời gian nhắm mắt (Eye Closed Threshold)
-        # Giới hạn nhỏ nhất là 1s
         layout.addWidget(QLabel("Eye Closed Threshold (1.0s - 3.0s):"))
         self.eye_slider = QSlider(Qt.Horizontal)
         self.eye_slider.setMinimum(10)  # Tương ứng 1.0s
@@ -119,6 +160,9 @@ class SettingsTab(QWidget):
         self.vol_slider.setValue(70)
         self.vol_slider.valueChanged.connect(self.update_volume)
         layout.addWidget(self.vol_slider)
+        self.update_volume(self.vol_slider.value())
+
+        self.sound_checkbox.stateChanged.connect(self.on_sound_toggled)
 
         # 4. Chế độ tối (Dark Mode)
         self.dark_mode_checkbox = QCheckBox("Dark Mode")
@@ -147,6 +191,10 @@ class SettingsTab(QWidget):
         if hasattr(self.detector, 'sound_warning'):
             self.detector.sound_warning.set_volume(volume_level)
 
+    def on_sound_toggled(self, state):
+        self.detector.enable_alarm_sound = state == Qt.Checked
+        if not self.detector.enable_alarm_sound:
+            self.detector.stop_alarm()
 
     def toggle_dark_mode(self, state):
         if state == Qt.Checked:
@@ -165,74 +213,108 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Drowsiness Detection")
         self.setGeometry(100, 100, 1200, 700)
 
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        main_layout = QVBoxLayout()
+        main_layout = QHBoxLayout()
         central_widget.setLayout(main_layout)
 
+        # ===== LEFT PANEL (Camera + Status) =====
+        left_panel = QVBoxLayout()
+
+        # STATUS
         self.status_label = QLabel("AWAKE")
         self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setFixedHeight(100)
         self.status_label.setStyleSheet("""
-            font-size: 28px;
+            font-size: 30px;
             font-weight: bold;
-            color: green;
-            padding: 10px;
-            border: 2px solid black;
+            background-color: green;
+            color: white;
         """)
-        main_layout.addWidget(self.status_label)
+        left_panel.addWidget(self.status_label)
 
-
-        body_layout = QHBoxLayout()
-        main_layout.addLayout(body_layout)
-
-
+        # CAMERA
         self.camera_label = QLabel()
-        self.camera_label.setFixedSize(800, 500)
+        self.camera_label.setMinimumSize(640, 400)
         self.camera_label.setStyleSheet("background-color: black;")
         self.camera_label.setAlignment(Qt.AlignCenter)
+        left_panel.addWidget(self.camera_label)
+        #fps
+        self.fps_label = QLabel(self.camera_label)
+        self.fps_label.setStyleSheet("""
+            color: white;
+            font-size: 14px;
+            background-color: rgba(0,0,0,120);
+            padding: 3px;
+        """)
+        self.fps_label.move(self.camera_label.width() - 80, 5)
+        self.fps_label.resize(70, 20)
+        self.fps_label.setText("FPS: 0")
+        self.fps_label.raise_()
 
-        body_layout.addWidget(self.camera_label)
+        main_layout.addLayout(left_panel, 3)  # tỷ lệ 3
 
+        # ===== RIGHT PANEL =====
         right_panel = QVBoxLayout()
 
         self.tabs = QTabWidget()
-        self.tabs.setFixedSize(350, 450)
+        self.tabs.setMinimumWidth(300)
 
-        # Tạo các Widget cho từng Tab
-        self.tab_settings = QWidget()
-        self.tab_settings = SettingsTab(self.drowsiness)  # Truyền detector vào
-        self.tabs.addTab(self.tab_settings, "Settings")
-        # self.tab_stats = QWidget()
+        self.tab_settings = SettingsTab(self.drowsiness)
         self.tab_stats = StatisticsTab(self.drowsiness)
         self.tab_logs = QListWidget()
+        self._log_max_lines = 500
 
+        self.tabs.addTab(self.tab_settings, "Settings")
         self.tabs.addTab(self.tab_logs, "Logs")
         self.tabs.addTab(self.tab_stats, "Stats")
-        self.tabs.addTab(self.tab_settings, "Settings")
 
-
-        # Thêm tabs vào right_panel thay cho chart_label cũ
         right_panel.addWidget(self.tabs)
 
-        # ==== FPS ====
+        # FPS
         self.fps_label = QLabel("FPS: 0")
         self.fps_label.setStyleSheet("font-size: 16px;")
-        right_panel.addWidget(self.fps_label)
+        # right_panel.addWidget(self.fps_label)
 
-        # ==== BUTTONS ====
-        self.start_btn = QPushButton("Start")
-        self.stop_btn = QPushButton("Stop")
+        # BUTTONS
+        self.start_btn = QPushButton("START")
+        self.start_btn.setFixedHeight(50)
+        self.start_btn.setFixedWidth(200)
+        self.start_btn.setStyleSheet("""
+            background-color: #28a745;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 8px;
+        """)
 
-        self.start_btn.setStyleSheet("padding: 10px;")
-        self.stop_btn.setStyleSheet("padding: 10px;")
+        self.stop_btn = QPushButton("EXIT")
+        self.stop_btn.setFixedHeight(40)
+        self.stop_btn.setFixedWidth(60)
+        self.stop_btn.setStyleSheet("""
+            background-color: #dc3545;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 8px;
+        """)
 
-        right_panel.addWidget(self.start_btn)
-        right_panel.addWidget(self.stop_btn)
+        # right_panel.addWidget(self.start_btn)
+        # right_panel.addWidget(self.stop_btn)
+        # right_panel.addStretch()
+        start_layout = QHBoxLayout()
+        start_layout.addStretch()
+        start_layout.addWidget(self.start_btn)
+        start_layout.addStretch()
+        right_panel.addLayout(start_layout)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.stop_btn)
+        right_panel.addLayout(btn_layout)
 
-        right_panel.addStretch()
-
-        body_layout.addLayout(right_panel)
+        main_layout.addLayout(right_panel, 1)  # tỷ lệ 1
 
         self.cap = cv2.VideoCapture(0)
 
@@ -247,6 +329,7 @@ class MainWindow(QMainWindow):
 
     def stop_camera(self):
         self.timer.stop()
+        self.drowsiness.stop_alarm()
         self.vision.stop()
 
     def get_color(cls_id):
@@ -303,8 +386,10 @@ class MainWindow(QMainWindow):
                                 0.6, color, 2)
 
         state, message = self.drowsiness.update(results)
+        self.drowsiness.play_alarm(state)
         self.set_status(state, message)
         self.tab_stats.update_charts(state)
+        self.append_status_log(state, message, int(fps))
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame.shape
@@ -313,27 +398,41 @@ class MainWindow(QMainWindow):
         qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image)
 
-        self.camera_label.setPixmap(pixmap)
+        self.camera_label.setPixmap(pixmap.scaled(
+            self.camera_label.size(),
+            Qt.KeepAspectRatio
+        ))
+
+    def append_status_log(self, state, message, fps):
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {state} | {message} | FPS {fps}"
+        self.tab_logs.addItem(line)
+        while self.tab_logs.count() > self._log_max_lines:
+            self.tab_logs.takeItem(0)
+        last = self.tab_logs.item(self.tab_logs.count() - 1)
+        if last is not None:
+            self.tab_logs.scrollToItem(last)
 
     def set_status(self, state, message):
-        # Thiết lập màu sắc và nội dung dựa trên state
         if state == "DANGER":
-            color = "red"
-            display_text = f"STATUS: {message}"
+            bg_color = "red"
+            text_color = "white"
         elif state == "WARNING":
-            color = "orange"
-            display_text = f"STATUS: {message}"
-        else:  # Trạng thái SAFE
-            color = "green"
-            display_text = f"STATUS: {message}"
+            bg_color = "yellow"
+            text_color = "black"
+        else:
+            bg_color = "green"
+            text_color = "white"
 
-        # Cập nhật label duy nhất một lần để tránh lag giao diện
-        self.status_label.setText(display_text)
+        self.status_label.setText(f"{message}")
+
         self.status_label.setStyleSheet(f"""
-            font-size: 28px;
+            font-size: 24px;
             font-weight: bold;
-            color: {color};
-            padding: 10px;
-            border: 2px solid {color};
-            background-color: #f0f0f0;
+            color: {text_color};
+            background-color: {bg_color};
         """)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fps_label.move(self.camera_label.width() - 80, 5)

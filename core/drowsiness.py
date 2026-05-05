@@ -1,5 +1,9 @@
 import time
+from pathlib import Path
+
 import pygame
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class DrowsinessDetector:
@@ -12,12 +16,17 @@ class DrowsinessDetector:
 
         self.danger_end_time = 0
         self.DANGER_DELAY = 3.0
-        #am thanh
+        # Âm thanh (đường dẫn tuyệt đối để chạy được dù cwd khác)
         pygame.mixer.init()
-        self.sound_warning = pygame.mixer.Sound("assets/sounds/warning.wav")
-        self.sound_danger = pygame.mixer.Sound("assets/sounds/danger.wav")
+        self.sound_warning = pygame.mixer.Sound(
+            str(_PROJECT_ROOT / "assets" / "sounds" / "warning.wav")
+        )
+        self.sound_danger = pygame.mixer.Sound(
+            str(_PROJECT_ROOT / "assets" / "sounds" / "danger.wav")
+        )
 
-        self.is_playing = False
+        self.enable_alarm_sound = True
+        self._prev_alarm_state = "SAFE"
 
         # Các ngưỡng cấu hình
         self.EYE_CLOSED_THRESHOLD = 1.0  # Nhắm mắt quá 1 giây -> Danger
@@ -34,18 +43,38 @@ class DrowsinessDetector:
             4: 'Focused', 5: 'HeadLeft', 6: 'HeadRight', 7: 'HeadBack', 8: 'HeadDown'
         }
 
+    def stop_alarm(self):
+        pygame.mixer.Channel(0).stop()
+
     def play_alarm(self, state):
-        # Nếu người dùng tắt âm thanh trong tab Settings thì không phát
-        # (Giả sử bạn có biến self.enable_sound)
+        ch = pygame.mixer.Channel(0)
+
+        if not self.enable_alarm_sound:
+            ch.stop()
+            self._prev_alarm_state = state
+            return
+
+        prev = self._prev_alarm_state
+
+        if state == "SAFE":
+            ch.stop()
+            self._prev_alarm_state = state
+            return
 
         if state == "DANGER":
-            if not pygame.mixer.Channel(0).get_busy():  # Nếu kênh chưa bận thì mới phát
-                pygame.mixer.Channel(0).play(self.sound_danger, loops=-1)  # loops=-1 để lặp vô tận
-        elif state == "WARNING":
-            if not pygame.mixer.Channel(0).get_busy():
-                pygame.mixer.Channel(0).play(self.sound_warning)
-        else:
-            pygame.mixer.Channel(0).stop()
+            if not ch.get_busy() or ch.get_sound() != self.sound_danger:
+                ch.play(self.sound_danger, loops=-1)
+            self._prev_alarm_state = state
+            return
+
+        if state == "WARNING":
+            if prev != "WARNING":
+                ch.stop()
+                ch.play(self.sound_warning)
+            self._prev_alarm_state = state
+            return
+
+        self._prev_alarm_state = state
 
     def update(self, results):
         current_time = time.time()
@@ -84,7 +113,6 @@ class DrowsinessDetector:
         if current_time < self.danger_end_time:
             return "DANGER", "CRITICAL: DROWSINESS DETECTED!"
 
-        # --- LOGIC KIỂM TRA WARNING (TRUNG BÌNH) ---
         # Mất tập trung (HeadLeft, HeadRight, HeadBack)
         distracted_classes = {5, 6, 7}
         if any(c in distracted_classes for c in classes) and 4 not in classes:
