@@ -15,8 +15,73 @@ import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 import numpy as np
 import time
+
+
+class DoubleClickButton(QPushButton):
+    def __init__(self, *args, on_double_click=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_double_click = on_double_click
+
+    def mouseDoubleClickEvent(self, event):
+        if callable(self._on_double_click):
+            self._on_double_click()
+        event.accept()
+
+
+class LiveCameraWindow(QWidget):
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self._main = main_window
+
+        self.setWindowTitle("Live Camera")
+        self.setMinimumSize(640, 400)
+
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        self.image_label = QLabel("No camera")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background-color: #2b2b2b; color: white;")
+        layout.addWidget(self.image_label)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(30)
+
+    def showEvent(self, event):
+        # If this window is reused (shown again after being closed),
+        # make sure its refresh timer is running.
+        if not self.timer.isActive():
+            self.timer.start(30)
+        super().showEvent(event)
+
+    def _tick(self):
+        # Read directly from camera stream; do NOT run inference/model here.
+        ret, frame_bgr = self._main.vision.read()
+        self._main._set_camera_connected(bool(ret))
+
+        if not ret or frame_bgr is None:
+            self.image_label.setText("No camera connected")
+            self.image_label.setStyleSheet("background-color: #b00020; color: white; font-size: 18px;")
+            return
+
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame_rgb.shape
+        bytes_per_line = ch * w
+        qt_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qt_image)
+        self.image_label.setPixmap(pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def closeEvent(self, event):
+        if self.timer.isActive():
+            self.timer.stop()
+        # Resume main processing loop when live window closes
+        if hasattr(self._main, "_on_live_window_closed"):
+            self._main._on_live_window_closed()
+        super().closeEvent(event)
 
 
 class StatisticsTab(QWidget):
@@ -26,26 +91,29 @@ class StatisticsTab(QWidget):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        layout.addWidget(QLabel("Real-time Anomalies (Live):"))
+        layout.addWidget(QLabel("Duration and Time"))
         self.line_fig = Figure(figsize=(5, 4), dpi=70)
         self.line_canvas = FigureCanvas(self.line_fig)
         self.ax_line = self.line_fig.add_subplot(111)
-        self.ax_line.set_ylim(2.5, -0.5)
-        self.ax_line.set_yticks([0, 1, 2])
-        self.ax_line.set_yticklabels(['Safe', 'Warning', 'Danger'])
+        self.ax_line.set_ylim(0, 10.5)
+        self.ax_line.set_yticks([0, 1, 5, 10])
+        self.ax_line.set_ylabel("Duration (s)")
 
-        # line chart
-        self.times = []  # lưu timestamp
-        self.states = []  # lưu state (0,1,2)
-        # line nối
-        self.line_plot, = self.ax_line.plot([], [], linewidth=1)
-        # scatter (các chấm)
-        self.scatter = self.ax_line.scatter([], [], s=50)
+        # Scatter events: each state change -> new dot
+        self._x_step = 0.8  # requested "0.8cm" spacing (uniform step on x-axis)
+        self._max_points = 12
+        self._event_states = []          # "WARNING" | "DANGER"
+        self._event_durations = []       # seconds (finalized on state change)
+        self._event_timestamps = []      # datetime string when state started (for x labels)
 
-        # time chart
-        self.start_time = time.time()
-        self.ax_line.set_xlim(0, 60)  # 60 giây gần nhất
-        self.ax_line.set_xlabel("Time (s)")
+        # Track current segment (we only draw previous segment when state changes)
+        self._segment_state = None
+        self._segment_start_time = None
+        self._segment_start_label = None
+
+        self.ax_line.set_xlabel("System time")
+        self.ax_line.set_xticks([])
+        self.ax_line.grid(True, axis="y", alpha=0.25)
 
 
         layout.addWidget(self.line_canvas)
@@ -57,60 +125,111 @@ class StatisticsTab(QWidget):
         layout.addWidget(self.pie_canvas)
 
         self.stats_counts = {"DANGER": 0, "WARNING": 0, "SAFE": 0}
+        self._state_durations = {"DANGER": 0.0, "WARNING": 0.0, "SAFE": 0.0}
+        # Render default pie (SAFE 100%) on startup
+        self.draw_pie_chart()
 
     def update_charts(self, current_state):
+        now = time.time()
+        state = current_state if current_state in {"SAFE", "WARNING", "DANGER"} else "SAFE"
 
-        state_map = {"SAFE": 0, "WARNING": 1, "DANGER": 2}
-        color_map = {0: "green", 1: "orange", 2: "red"}
-
-        now = time.time() - self.start_time
-        new_val = state_map.get(current_state, 0)
-
-        # ===== Logic 1 phút =====
-        if len(self.states) > 0:
-            last_time = self.times[-1]
-            last_state = self.states[-1]
-
-            # nếu cùng trạng thái và chưa quá 60s → update chấm cuối
-            if new_val == last_state and (now - last_time) < 60:
-                self.times[-1] = now
-            else:
-                self.times.append(now)
-                self.states.append(new_val)
+        # initialize first segment
+        if self._segment_state is None:
+            self._segment_state = state
+            self._segment_start_time = now
+            self._segment_start_label = datetime.now().strftime("%H:%M")
         else:
-            self.times.append(now)
-            self.states.append(new_val)
+            # If state changed: finalize previous segment and (maybe) append a dot
+            if state != self._segment_state:
+                prev_state = self._segment_state
+                prev_start = self._segment_start_time
+                prev_label = self._segment_start_label
+                prev_duration = max(0.0, now - prev_start)
 
-        # ===== Giữ dữ liệu trong 60s =====
-        while len(self.times) > 0 and (now - self.times[0]) > 60:
-            self.times.pop(0)
-            self.states.pop(0)
+                # --- Pie chart accounting (3 states, time-weighted) ---
+                if prev_state in self._state_durations:
+                    self._state_durations[prev_state] += prev_duration
 
-        # update line
-        self.line_plot.set_data(self.times, self.states)
+                if prev_state in {"WARNING", "DANGER"}:
+                    self._event_states.append(prev_state)
+                    self._event_durations.append(prev_duration)
+                    self._event_timestamps.append(prev_label)
 
-        colors = [color_map[s] for s in self.states]
-        self.scatter.set_offsets(np.c_[self.times, self.states])
-        self.scatter.set_color(colors)
-        # x
-        self.ax_line.set_xlim(max(0, now - 60), now)
-        self.ax_line.set_ylim(-0.5, 2.5)
+                    # keep last N dots
+                    if len(self._event_states) > self._max_points:
+                        extra = len(self._event_states) - self._max_points
+                        self._event_states = self._event_states[extra:]
+                        self._event_durations = self._event_durations[extra:]
+                        self._event_timestamps = self._event_timestamps[extra:]
 
-        self.line_canvas.draw_idle()
+                    # redraw ONLY when we add a new dot (dots stay fixed; no moving)
+                    self.ax_line.cla()
+                    self.ax_line.set_ylim(0, 10.5)
+                    self.ax_line.set_yticks([0, 1, 5, 10])
+                    self.ax_line.set_ylabel("Duration (s)")
+                    self.ax_line.set_xlabel("System time")
+                    self.ax_line.grid(True, axis="y", alpha=0.25)
 
-        # ===== Pie chart =====
-        self.stats_counts[current_state] += 1
-        self.draw_pie_chart()
+                    xs = [i * self._x_step for i in range(len(self._event_states))]
+                    ys = [min(10.0, float(d)) for d in self._event_durations]
+
+                    def _color_for(s):
+                        return "red" if s == "DANGER" else "orange"
+
+                    colors = [_color_for(s) for s in self._event_states]
+
+                    # line connecting dots
+                    if len(xs) >= 2:
+                        self.ax_line.plot(xs, ys, linewidth=1.2, color="#666666", alpha=0.9)
+
+                    self.ax_line.scatter(xs, ys, s=70, c=colors, zorder=3)
+
+                    # x tick labels under each dot = system time when state started
+                    self.ax_line.set_xticks(xs)
+                    self.ax_line.set_xticklabels(self._event_timestamps, rotation=45, ha="right", fontsize=8)
+
+                    if len(xs) > 0:
+                        self.ax_line.set_xlim(-0.5 * self._x_step, xs[-1] + 0.5 * self._x_step)
+
+                    # Legend (top-right): yellow=WARNING, red=DANGER
+                    legend_handles = [
+                        Line2D([0], [0], marker='o', color='none', markerfacecolor='orange',
+                               markeredgecolor='orange', markersize=8, label='WARNING'),
+                        Line2D([0], [0], marker='o', color='none', markerfacecolor='red',
+                               markeredgecolor='red', markersize=8, label='DANGER'),
+                    ]
+                    self.ax_line.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=8)
+
+                    self.line_canvas.draw_idle()
+
+                # Update pie chart ONLY on state change (after accounting)
+                self.draw_pie_chart()
+
+                # start new segment
+                self._segment_state = state
+                self._segment_start_time = now
+                self._segment_start_label = datetime.now().strftime("%H:%M")
+
+        # Pie chart is updated only when state changes
 
     def draw_pie_chart(self):
         self.ax_pie.clear()
-        labels = list(self.stats_counts.keys())
-        sizes = list(self.stats_counts.values())
+        labels = list(self._state_durations.keys())
+        sizes = list(self._state_durations.values())
         colors = ['#ff4d4d', '#ffa64d', '#4dff4d']  # Red, Orange, Green
 
-        if sum(sizes) > 0:
-            self.ax_pie.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors, startangle=140)
-            self.ax_pie.axis('equal')
+        # Default at app start: SAFE = 100% until durations exist
+        if sum(sizes) <= 0:
+            # Order matches insertion order of dict: DANGER, WARNING, SAFE
+            sizes = [0.0, 0.0, 1.0]
+            labels = ["", "", "SAFE"]
+
+        def _autopct(pct):
+            # Hide tiny/zero slices (and hide labels when sizes are 0)
+            return f"{pct:.1f}%" if pct >= 0.5 else ""
+
+        self.ax_pie.pie(sizes, labels=labels, autopct=_autopct, colors=colors, startangle=140)
+        self.ax_pie.axis('equal')
         self.pie_canvas.draw_idle()
 
 
@@ -136,8 +255,8 @@ class SettingsTab(QWidget):
         layout.addLayout(eye_layout)
         self.eye_slider.valueChanged.connect(self.update_eye_threshold)
 
-        # 2. Điều chỉnh thời gian Delay giữa các trạng thái
-        layout.addWidget(QLabel("Danger State Delay (1.0s - 5.0s):"))
+        # 2. Thời gian còi Danger kêu thêm (sound hold)
+        layout.addWidget(QLabel("Danger Alarm Sound Duration (1.0s - 5.0s):"))
         self.delay_slider = QSlider(Qt.Horizontal)
         self.delay_slider.setMinimum(10)
         self.delay_slider.setMaximum(50)
@@ -209,6 +328,11 @@ class MainWindow(QMainWindow):
 
         self.vision = VisionSystem("E:\\Drowsiness-Detection\\models\\best1.pt").start()
         self.drowsiness = DrowsinessDetector()
+        self._camera_connected = False
+        self._last_frame_bgr = None
+        self._live_window = None
+        self._live_mode = False
+        self._was_timer_active_before_live = False
 
         self.setWindowTitle("Drowsiness Detection")
         self.setGeometry(100, 100, 1200, 700)
@@ -242,22 +366,32 @@ class MainWindow(QMainWindow):
         self.camera_label.setAlignment(Qt.AlignCenter)
         left_panel.addWidget(self.camera_label)
         #fps
-        self.fps_label = QLabel(self.camera_label)
-        self.fps_label.setStyleSheet("""
+        self.fps_overlay_label = QLabel(self.camera_label)
+        self.fps_overlay_label.setStyleSheet("""
             color: white;
             font-size: 14px;
             background-color: rgba(0,0,0,120);
             padding: 3px;
         """)
-        self.fps_label.move(self.camera_label.width() - 80, 5)
-        self.fps_label.resize(70, 20)
-        self.fps_label.setText("FPS: 0")
-        self.fps_label.raise_()
+        self.fps_overlay_label.move(5, 5)
+        self.fps_overlay_label.resize(90, 22)
+        self.fps_overlay_label.setText("FPS: 0")
+        self.fps_overlay_label.raise_()
 
         main_layout.addLayout(left_panel, 3)  # tỷ lệ 3
 
         # ===== RIGHT PANEL =====
         right_panel = QVBoxLayout()
+
+        # Top-right live camera button
+        live_btn_row = QHBoxLayout()
+        live_btn_row.addStretch()
+        self.live_camera_btn = DoubleClickButton("Live Camera", on_double_click=self.open_live_camera_window)
+        self.live_camera_btn.setFixedHeight(34)
+        self.live_camera_btn.setFixedWidth(130)
+        live_btn_row.addWidget(self.live_camera_btn)
+        right_panel.addLayout(live_btn_row)
+        self._update_live_camera_btn_style()
 
         self.tabs = QTabWidget()
         self.tabs.setMinimumWidth(300)
@@ -270,13 +404,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_settings, "Settings")
         self.tabs.addTab(self.tab_logs, "Logs")
         self.tabs.addTab(self.tab_stats, "Stats")
+        self.tabs.setCurrentWidget(self.tab_stats)
 
         right_panel.addWidget(self.tabs)
-
-        # FPS
-        self.fps_label = QLabel("FPS: 0")
-        self.fps_label.setStyleSheet("font-size: 16px;")
-        # right_panel.addWidget(self.fps_label)
 
         # BUTTONS
         self.start_btn = QPushButton("START")
@@ -324,6 +454,55 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self.start_camera)
         self.stop_btn.clicked.connect(self.stop_camera)
 
+    def _update_live_camera_btn_style(self):
+        if getattr(self, "_camera_connected", False):
+            self.live_camera_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    color: white;
+                    font-size: 14px;
+                    font-weight: bold;
+                    border-radius: 8px;
+                }
+                QPushButton:hover { background-color: #23923d; }
+            """)
+        else:
+            self.live_camera_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #dc3545;
+                    color: white;
+                    font-size: 14px;
+                    font-weight: bold;
+                    border-radius: 8px;
+                }
+                QPushButton:hover { background-color: #c82333; }
+            """)
+
+    def _set_camera_connected(self, connected: bool):
+        connected = bool(connected)
+        if getattr(self, "_camera_connected", None) == connected:
+            return
+        self._camera_connected = connected
+        self._update_live_camera_btn_style()
+
+    def open_live_camera_window(self):
+        if self._live_window is None:
+            self._live_window = LiveCameraWindow(self)
+        # Pause main processing (model/detect) while live window is open
+        self._was_timer_active_before_live = self.timer.isActive()
+        self._live_mode = True
+        if self.timer.isActive():
+            self.timer.stop()
+        self._live_window.show()
+        self._live_window.raise_()
+        self._live_window.activateWindow()
+
+    def _on_live_window_closed(self):
+        self._live_mode = False
+        if self._was_timer_active_before_live:
+            self.timer.start(30)
+        self._was_timer_active_before_live = False
+
     def start_camera(self):
         self.timer.start(30)
 
@@ -331,6 +510,7 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         self.drowsiness.stop_alarm()
         self.vision.stop()
+        self._set_camera_connected(False)
 
     def get_color(cls_id):
         import random
@@ -341,11 +521,26 @@ class MainWindow(QMainWindow):
             random.randint(0, 255)
         )
 
+    @staticmethod
+    def _display_class_name(raw_name: str) -> str:
+        # Camera view is from the observer perspective; swap left/right for user-facing meaning.
+        if raw_name == "HeadLeft":
+            return "HeadRight"
+        if raw_name == "HeadRight":
+            return "HeadLeft"
+        return raw_name
+
     def update_frame(self):
         import time
 
         ret, frame = self.vision.read()
         if not ret:
+            self._set_camera_connected(False)
+            return
+        self._set_camera_connected(True)
+
+        # If user is in Live Camera mode, we pause processing/detect.
+        if getattr(self, "_live_mode", False):
             return
 
         if not hasattr(self, "prev_time"):
@@ -354,7 +549,7 @@ class MainWindow(QMainWindow):
         current_time = time.time()
         fps = 1 / (current_time - self.prev_time)
         self.prev_time = current_time
-        self.fps_label.setText(f"FPS: {int(fps)}")
+        self.fps_overlay_label.setText(f"FPS: {int(fps)}")
 
         results = self.vision.detect(frame)
 
@@ -368,7 +563,8 @@ class MainWindow(QMainWindow):
                     cls = int(box.cls[0])
 
                     names = results[0].names
-                    label = f"{names[cls]} {conf:.2f}"
+                    shown_name = self._display_class_name(names[cls])
+                    label = f"{shown_name} {conf:.2f}"
 
                     if cls in [1, 8]:
                         color = (0, 0, 255)  # Red (BGR)
@@ -377,7 +573,8 @@ class MainWindow(QMainWindow):
                     else:
                         color = (0, 255, 0)  # Green (BGR)
 
-                    label = f"{names[cls]} {conf:.2f}"
+                    shown_name = self._display_class_name(names[cls])
+                    label = f"{shown_name} {conf:.2f}"
 
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
@@ -391,6 +588,8 @@ class MainWindow(QMainWindow):
         self.tab_stats.update_charts(state)
         self.append_status_log(state, message, int(fps))
 
+        self._last_frame_bgr = frame.copy()
+
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame.shape
         bytes_per_line = ch * w
@@ -402,6 +601,7 @@ class MainWindow(QMainWindow):
             self.camera_label.size(),
             Qt.KeepAspectRatio
         ))
+        self.fps_overlay_label.raise_()
 
     def append_status_log(self, state, message, fps):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -435,4 +635,4 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.fps_label.move(self.camera_label.width() - 80, 5)
+        self.fps_overlay_label.move(5, 5)
