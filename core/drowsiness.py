@@ -17,17 +17,21 @@ class DrowsinessDetector:
         self._yawn_times_60s = deque()
         self._yawn_burst_triggered_in_window = False
 
-        # Warning burst when yawns > 3 in 60s
+        # Warning burst when yawns exceed threshold in 60s
         self._warning_burst_remaining = 0
         self._warning_burst_next_at = 0.0
         self.WARNING_BURST_COUNT = 3
         self.WARNING_BURST_GAP_S = 0.3
+        self.YAWN_WARNING_COUNT = 4  # old behavior equivalent: yawns > 3 in 60s
+        self.YAWN_WARNING_WINDOW_SECONDS = 60.0
         self._suppress_next_warning_sound = False
         self._yawn_warning_latched = False
 
         # Alarm hold time (sound only): after leaving DANGER, keep sounding for a bit
         self.danger_alarm_until = 0.0
         self.DANGER_DELAY = 3.0  # seconds
+        self.warning_alarm_until = 0.0
+        self.WARNING_DELAY = 3.0  # seconds
         # Âm thanh (đường dẫn tuyệt đối để chạy được dù cwd khác)
         pygame.mixer.init()
         self.sound_warning = pygame.mixer.Sound(
@@ -41,7 +45,7 @@ class DrowsinessDetector:
         self._prev_alarm_state = "SAFE"
 
         # Các ngưỡng cấu hình
-        self.EYE_CLOSED_THRESHOLD = 1.0  # Nhắm mắt quá 1 giây -> Danger
+        self.EYE_CLOSED_THRESHOLD = 2.0  # Nhắm mắt quá ngưỡng -> Danger
         self.DISTRACTION_THRESHOLD = 3.0  # Ngoảnh mặt quá 3 giây -> Warning
         self.YAWN_COOLDOWN = 5.0  # Khoảng cách giữa 2 lần ngáp
 
@@ -52,22 +56,24 @@ class DrowsinessDetector:
         # Map index class từ model
         self.CLASS_NAMES = {
             0: 'OpenEye', 1: 'CloseEye', 2: 'NoYawn', 3: 'Yawn',
-            # Swap left/right for user-facing meaning in camera view
-            4: 'Focused', 5: 'HeadRight', 6: 'HeadLeft', 7: 'HeadBack', 8: 'HeadDown'
+            4: 'Focused', 5: 'HeadLeft', 6: 'HeadRight', 7: 'HeadBack', 8: 'HeadDown'
         }
 
     def stop_alarm(self):
         pygame.mixer.Channel(0).stop()
+        self.danger_alarm_until = 0.0
+        self.warning_alarm_until = 0.0
 
     def play_alarm(self, state):
         ch = pygame.mixer.Channel(0)
 
         if not self.enable_alarm_sound:
             ch.stop()
+            self.danger_alarm_until = 0.0
+            self.warning_alarm_until = 0.0
             self._prev_alarm_state = state
             return
 
-        prev = self._prev_alarm_state
         now = time.time()
 
         # If a yawn-triggered warning burst is pending, play it (unless danger is active).
@@ -84,52 +90,49 @@ class DrowsinessDetector:
                     self._warning_burst_remaining -= 1
                     self._warning_burst_next_at = now + float(self.WARNING_BURST_GAP_S)
 
-        # Keep danger alarm active for a short hold, but don't force UI/state to remain DANGER.
-        # Requirement: when leaving DANGER, danger sound should continue for at most DANGER_DELAY seconds then stop.
-        danger_should_sound = (state == "DANGER") or (now < self.danger_alarm_until)
+        # Refresh hold windows while we are in each non-safe state.
+        # This guarantees configured duration even when source audio file is short.
+        if state == "DANGER":
+            self.danger_alarm_until = now + float(self.DANGER_DELAY)
+        elif state == "WARNING":
+            self.warning_alarm_until = now + float(self.WARNING_DELAY)
 
-        # If SAFE: do NOT stop warning sound; let wav finish naturally.
-        # But if danger hold has ended, we should stop danger sound.
+        danger_should_sound = now < self.danger_alarm_until
+        warning_should_sound = now < self.warning_alarm_until
+
+        # In SAFE state, continue sounding only while hold windows are still active.
         if state == "SAFE":
-            if now >= self.danger_alarm_until and ch.get_busy() and ch.get_sound() == self.sound_danger:
+            if danger_should_sound:
+                if (not ch.get_busy()) or (ch.get_sound() != self.sound_danger):
+                    if ch.get_busy() and ch.get_sound() != self.sound_danger:
+                        ch.stop()
+                    ch.play(self.sound_danger, loops=-1)
+            elif warning_should_sound:
+                if (not ch.get_busy()) or (ch.get_sound() != self.sound_warning):
+                    if ch.get_busy() and ch.get_sound() != self.sound_warning:
+                        ch.stop()
+                    ch.play(self.sound_warning, loops=-1)
+            elif ch.get_busy():
                 ch.stop()
             self._prev_alarm_state = state
             return
 
-        # DANGER (or danger-hold): play danger continuously, but only within the hold window.
-        # When the hold window ends and state is no longer DANGER, stop the danger sound.
-        if danger_should_sound:
-            if state == "DANGER":
-                # refresh the hold window each frame we remain in DANGER
-                self.danger_alarm_until = now + float(self.DANGER_DELAY)
-
+        # Danger has highest priority.
+        if state == "DANGER" or danger_should_sound:
             if (not ch.get_busy()) or (ch.get_sound() != self.sound_danger):
-                # If something else is playing, replace with danger
                 if ch.get_busy() and ch.get_sound() != self.sound_danger:
                     ch.stop()
                 ch.play(self.sound_danger, loops=-1)
-
-            # If we've left DANGER and the hold window is over, stop.
-            if state != "DANGER" and now >= self.danger_alarm_until and ch.get_busy() and ch.get_sound() == self.sound_danger:
-                ch.stop()
-
             self._prev_alarm_state = "DANGER"
             return
 
-        if state == "WARNING":
-            # WARNING: play once on transition into WARNING.
-            # If state changes to SAFE later, we let the wav finish (no stop()).
-            if prev != "WARNING":
-                if self._suppress_next_warning_sound:
-                    self._suppress_next_warning_sound = False
-                    self._prev_alarm_state = state
-                    return
-                # If danger sound is playing, keep danger priority and don't override.
-                if ch.get_busy() and ch.get_sound() == self.sound_danger:
-                    self._prev_alarm_state = state
-                    return
-                ch.play(self.sound_warning)
-            self._prev_alarm_state = state
+        # WARNING should keep sounding (loop) until SAFE + hold window expires.
+        if state == "WARNING" or warning_should_sound:
+            if (not ch.get_busy()) or (ch.get_sound() != self.sound_warning):
+                if ch.get_busy() and ch.get_sound() != self.sound_warning:
+                    ch.stop()
+                ch.play(self.sound_warning, loops=-1)
+            self._prev_alarm_state = "WARNING"
             return
 
         self._prev_alarm_state = state
@@ -154,8 +157,8 @@ class DrowsinessDetector:
         else:
             self.eye_closed_start_time = None
 
-        # Gục đầu (HeadDown)
-        if 8 in classes:
+        # Gục đầu (HeadDown) hoặc ngửa đầu ra sau (HeadBack) -> Danger ngay lập tức
+        if 8 in classes or 7 in classes:
             is_danger_now = True
 
         # Nếu phát hiện Danger ở frame này, cập nhật mốc kết thúc delay
@@ -166,8 +169,8 @@ class DrowsinessDetector:
             self.detail_message = "CRITICAL: DROWSINESS DETECTED!"
             return self.current_state, self.detail_message
 
-        # Mất tập trung (HeadLeft, HeadRight, HeadBack)
-        distracted_classes = {5, 6, 7}
+        # Mất tập trung (HeadLeft, HeadRight)
+        distracted_classes = {5, 6}
         if any(c in distracted_classes for c in classes) and 4 not in classes:
             if self.distraction_start_time is None:
                 self.distraction_start_time = current_time
@@ -184,13 +187,16 @@ class DrowsinessDetector:
                 self.yawn_count += 1
                 self.last_yawn_time = current_time
 
-                # Track yawns in a sliding 60s window
+                # Track yawns in a configurable sliding window
                 self._yawn_times_60s.append(current_time)
-                while len(self._yawn_times_60s) > 0 and (current_time - self._yawn_times_60s[0]) > 60.0:
+                while (
+                    len(self._yawn_times_60s) > 0
+                    and (current_time - self._yawn_times_60s[0]) > float(self.YAWN_WARNING_WINDOW_SECONDS)
+                ):
                     self._yawn_times_60s.popleft()
 
-                # Trigger burst when yawns > 3 in last 60s (i.e. 4th yawn), once per window
-                if len(self._yawn_times_60s) > 3 and not self._yawn_burst_triggered_in_window:
+                # Trigger burst once threshold is reached in the rolling 60s window.
+                if len(self._yawn_times_60s) >= int(self.YAWN_WARNING_COUNT) and not self._yawn_burst_triggered_in_window:
                     self._yawn_burst_triggered_in_window = True
                     self._warning_burst_remaining = int(self.WARNING_BURST_COUNT)
                     self._warning_burst_next_at = current_time  # start immediately
@@ -207,8 +213,8 @@ class DrowsinessDetector:
             # Otherwise: do not force WARNING just because we see a yawn.
             # Continue evaluating other conditions / fall through to SAFE if none.
 
-        # Reset trigger once we fall back to <=3 yawns in the rolling window
-        if len(self._yawn_times_60s) <= 3:
+        # Reset trigger once we fall back below threshold in the rolling window
+        if len(self._yawn_times_60s) < int(self.YAWN_WARNING_COUNT):
             self._yawn_burst_triggered_in_window = False
 
         # --- TRẠNG THÁI AN TOÀN ---

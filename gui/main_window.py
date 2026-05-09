@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QLabel, QPushButton, QWidget,
-    QVBoxLayout, QHBoxLayout, QFrame
+    QVBoxLayout, QHBoxLayout, QFrame, QSpinBox
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
@@ -40,6 +40,7 @@ class LiveCameraWindow(QWidget):
         self.setMinimumSize(640, 400)
 
         layout = QVBoxLayout()
+        layout.setSpacing(10)
         self.setLayout(layout)
 
         self.image_label = QLabel("No camera")
@@ -68,7 +69,8 @@ class LiveCameraWindow(QWidget):
             self.image_label.setStyleSheet("background-color: #b00020; color: white; font-size: 18px;")
             return
 
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        display_frame = cv2.flip(frame_bgr, 1) if getattr(self._main, "_mirror_display", False) else frame_bgr
+        frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame_rgb.shape
         bytes_per_line = ch * w
         qt_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
@@ -91,7 +93,10 @@ class StatisticsTab(QWidget):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        layout.addWidget(QLabel("Duration and Time"))
+        duration_title = QLabel("Duration and Time")
+        duration_title.setAlignment(Qt.AlignCenter)
+        duration_title.setStyleSheet("font-weight: bold;")
+        layout.addWidget(duration_title)
         self.line_fig = Figure(figsize=(5, 4), dpi=70)
         self.line_canvas = FigureCanvas(self.line_fig)
         self.ax_line = self.line_fig.add_subplot(111)
@@ -118,7 +123,10 @@ class StatisticsTab(QWidget):
 
         layout.addWidget(self.line_canvas)
 
-        layout.addWidget(QLabel("Violation Distribution (%):"))
+        pie_title = QLabel("Violation Distribution (%):")
+        pie_title.setAlignment(Qt.AlignCenter)
+        pie_title.setStyleSheet("font-weight: bold;")
+        layout.addWidget(pie_title)
         self.pie_fig = Figure(figsize=(5, 4), dpi=70)
         self.pie_canvas = FigureCanvas(self.pie_fig)
         self.ax_pie = self.pie_fig.add_subplot(111)
@@ -239,56 +247,170 @@ class SettingsTab(QWidget):
         self.detector = detector  # Truyền instance của DrowsinessDetector vào để chỉnh sửa trực tiếp
 
         layout = QVBoxLayout()
+        layout.setSpacing(14)
+        layout.setContentsMargins(12, 14, 12, 12)
         self.setLayout(layout)
+        layout.addSpacing(8)
+
+        def _make_card():
+            card = QFrame()
+            card.setStyleSheet("QFrame { background-color: #f3f6fa; border: 1px solid #e2e8f0; border-radius: 8px; }")
+            card_layout = QVBoxLayout()
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(6)
+            card.setLayout(card_layout)
+            return card, card_layout
 
         # 1. Điều chỉnh thời gian nhắm mắt (Eye Closed Threshold)
-        layout.addWidget(QLabel("Eye Closed Threshold (1.0s - 3.0s):"))
+        eye_card, eye_card_layout = _make_card()
+        eye_card_layout.addWidget(QLabel("Eye Closed Threshold (1.0s - 10.0s):"))
         self.eye_slider = QSlider(Qt.Horizontal)
         self.eye_slider.setMinimum(10)  # Tương ứng 1.0s
-        self.eye_slider.setMaximum(30)  # Tương ứng 3.0s
+        self.eye_slider.setMaximum(100)  # Tương ứng 10.0s
         self.eye_slider.setValue(int(self.detector.EYE_CLOSED_THRESHOLD * 10))
         self.eye_label = QLabel(f"{self.detector.EYE_CLOSED_THRESHOLD}s")
 
         eye_layout = QHBoxLayout()
         eye_layout.addWidget(self.eye_slider)
         eye_layout.addWidget(self.eye_label)
-        layout.addLayout(eye_layout)
-        self.eye_slider.valueChanged.connect(self.update_eye_threshold)
+        eye_card_layout.addLayout(eye_layout)
+        layout.addWidget(eye_card)
+        self.eye_slider.valueChanged.connect(self._update_eye_label)
 
-        # 2. Thời gian còi Danger kêu thêm (sound hold)
-        layout.addWidget(QLabel("Danger Alarm Sound Duration (1.0s - 5.0s):"))
+        # 2. Ngưỡng cảnh báo mất tập trung (HeadLeft/HeadRight)
+        distraction_card, distraction_card_layout = _make_card()
+        distraction_card_layout.addWidget(QLabel("Head Distraction Warning Time (1.0s - 15.0s):"))
+        self.distraction_slider = QSlider(Qt.Horizontal)
+        self.distraction_slider.setMinimum(10)
+        self.distraction_slider.setMaximum(150)
+        self.distraction_slider.setValue(int(self.detector.DISTRACTION_THRESHOLD * 10))
+        self.distraction_label = QLabel(f"{self.detector.DISTRACTION_THRESHOLD}s")
+
+        distraction_layout = QHBoxLayout()
+        distraction_layout.addWidget(self.distraction_slider)
+        distraction_layout.addWidget(self.distraction_label)
+        distraction_card_layout.addLayout(distraction_layout)
+        layout.addWidget(distraction_card)
+        self.distraction_slider.valueChanged.connect(self._update_distraction_label)
+
+        # 3-4. Yawn settings on one row (small selectors)
+        yawn_card, yawn_card_layout = _make_card()
+        yawn_card_layout.addWidget(QLabel("Yawn Warning Settings:"))
+        yawn_row_layout = QHBoxLayout()
+        yawn_row_layout.setSpacing(8)
+        yawn_row_layout.addWidget(QLabel("Window (min):"))
+        self.yawn_window_spin = QSpinBox()
+        self.yawn_window_spin.setMinimum(1)
+        self.yawn_window_spin.setMaximum(10)
+        self.yawn_window_spin.setValue(max(1, int(self.detector.YAWN_WARNING_WINDOW_SECONDS // 60)))
+        self.yawn_window_spin.setFixedWidth(64)
+        yawn_row_layout.addWidget(self.yawn_window_spin)
+        self.yawn_window_spin.valueChanged.connect(self.update_yawn_warning_window)
+
+        yawn_row_layout.addSpacing(12)
+        yawn_row_layout.addWidget(QLabel("Count:"))
+        self.yawn_count_spin = QSpinBox()
+        self.yawn_count_spin.setMinimum(2)
+        self.yawn_count_spin.setMaximum(10)
+        self.yawn_count_spin.setValue(int(self.detector.YAWN_WARNING_COUNT))
+        self.yawn_count_spin.setFixedWidth(64)
+        yawn_row_layout.addWidget(self.yawn_count_spin)
+        yawn_row_layout.addStretch()
+        yawn_card_layout.addLayout(yawn_row_layout)
+        layout.addWidget(yawn_card)
+
+        # 5. Thời gian còi Danger kêu thêm (sound hold)
+        danger_card, danger_card_layout = _make_card()
+        danger_card_layout.addWidget(QLabel("Danger Alarm Sound Duration (1.0s - 15.0s):"))
         self.delay_slider = QSlider(Qt.Horizontal)
         self.delay_slider.setMinimum(10)
-        self.delay_slider.setMaximum(50)
+        self.delay_slider.setMaximum(150)
         self.delay_slider.setValue(int(self.detector.DANGER_DELAY * 10))
         self.delay_label = QLabel(f"{self.detector.DANGER_DELAY}s")
 
         delay_layout = QHBoxLayout()
         delay_layout.addWidget(self.delay_slider)
         delay_layout.addWidget(self.delay_label)
-        layout.addLayout(delay_layout)
-        self.delay_slider.valueChanged.connect(self.update_delay_threshold)
+        danger_card_layout.addLayout(delay_layout)
+        layout.addWidget(danger_card)
+        self.delay_slider.valueChanged.connect(self._update_delay_label)
 
-        # 3. Âm thanh cảnh báo
+        # 6. Thời gian còi Warning kêu (sound hold)
+        warning_card, warning_card_layout = _make_card()
+        warning_card_layout.addWidget(QLabel("Warning Alarm Sound Duration (1.0s - 15.0s):"))
+        self.warning_delay_slider = QSlider(Qt.Horizontal)
+        self.warning_delay_slider.setMinimum(10)
+        self.warning_delay_slider.setMaximum(150)
+        self.warning_delay_slider.setValue(int(self.detector.WARNING_DELAY * 10))
+        self.warning_delay_label = QLabel(f"{self.detector.WARNING_DELAY}s")
+
+        warning_delay_layout = QHBoxLayout()
+        warning_delay_layout.addWidget(self.warning_delay_slider)
+        warning_delay_layout.addWidget(self.warning_delay_label)
+        warning_card_layout.addLayout(warning_delay_layout)
+        layout.addWidget(warning_card)
+        self.warning_delay_slider.valueChanged.connect(self._update_warning_delay_label)
+
+        # 7. Âm thanh cảnh báo
+        sound_card, sound_card_layout = _make_card()
         self.sound_checkbox = QCheckBox("Enable Alarm Sound")
         self.sound_checkbox.setChecked(True)  # Mặc định bật
-        layout.addWidget(self.sound_checkbox)
+        sound_card_layout.addWidget(self.sound_checkbox)
 
-        layout.addWidget(QLabel("Alarm Volume:"))
+        sound_card_layout.addWidget(QLabel("Alarm Volume:"))
         self.vol_slider = QSlider(Qt.Horizontal)
         self.vol_slider.setValue(70)
         self.vol_slider.valueChanged.connect(self.update_volume)
-        layout.addWidget(self.vol_slider)
+        sound_card_layout.addWidget(self.vol_slider)
         self.update_volume(self.vol_slider.value())
 
         self.sound_checkbox.stateChanged.connect(self.on_sound_toggled)
+        layout.addWidget(sound_card)
 
-        # 4. Chế độ tối (Dark Mode)
+        # 8. Chế độ tối (Dark Mode)
+        theme_card, theme_card_layout = _make_card()
         self.dark_mode_checkbox = QCheckBox("Dark Mode")
-        layout.addWidget(self.dark_mode_checkbox)
+        theme_card_layout.addWidget(self.dark_mode_checkbox)
         self.dark_mode_checkbox.stateChanged.connect(self.toggle_dark_mode)
+        layout.addWidget(theme_card)
+
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        self.save_btn = QPushButton("Save Settings")
+        self.save_btn.setFixedWidth(150)
+        self.save_btn.clicked.connect(self.save_settings)
+        save_row.addWidget(self.save_btn)
+        layout.addLayout(save_row)
+
+        self.save_status_label = QLabel("")
+        self.save_status_label.setStyleSheet("color: #2f7d32;")
+        self.save_status_label.setAlignment(Qt.AlignRight)
+        layout.addWidget(self.save_status_label)
 
         layout.addStretch()
+
+    def _update_eye_label(self, value):
+        self.eye_label.setText(f"{value / 10.0}s")
+
+    def _update_distraction_label(self, value):
+        self.distraction_label.setText(f"{value / 10.0}s")
+
+    def _update_delay_label(self, value):
+        self.delay_label.setText(f"{value / 10.0}s")
+
+    def _update_warning_delay_label(self, value):
+        self.warning_delay_label.setText(f"{value / 10.0}s")
+
+    def save_settings(self):
+        self.update_eye_threshold(self.eye_slider.value())
+        self.update_distraction_threshold(self.distraction_slider.value())
+        self.update_yawn_warning_window(self.yawn_window_spin.value())
+        self.update_yawn_warning_count(self.yawn_count_spin.value())
+        self.update_delay_threshold(self.delay_slider.value())
+        self.update_warning_delay_threshold(self.warning_delay_slider.value())
+        self.update_volume(self.vol_slider.value())
+        self.on_sound_toggled(self.sound_checkbox.checkState())
+        self.save_status_label.setText("Settings saved for current session")
 
     def update_eye_threshold(self, value):
         val = value / 10.0
@@ -299,6 +421,23 @@ class SettingsTab(QWidget):
         val = value / 10.0
         self.detector.DANGER_DELAY = val
         self.delay_label.setText(f"{val}s")
+
+    def update_warning_delay_threshold(self, value):
+        val = value / 10.0
+        self.detector.WARNING_DELAY = val
+        self.warning_delay_label.setText(f"{val}s")
+
+    def update_distraction_threshold(self, value):
+        val = value / 10.0
+        self.detector.DISTRACTION_THRESHOLD = val
+        self.distraction_label.setText(f"{val}s")
+
+    def update_yawn_warning_count(self, value):
+        self.detector.YAWN_WARNING_COUNT = int(value)
+
+    def update_yawn_warning_window(self, value):
+        minutes = int(value)
+        self.detector.YAWN_WARNING_WINDOW_SECONDS = float(minutes * 60)
 
     def update_volume(self, value):
 
@@ -317,8 +456,35 @@ class SettingsTab(QWidget):
 
     def toggle_dark_mode(self, state):
         if state == Qt.Checked:
-            # Bạn có thể gọi một hàm ở MainWindow để thay đổi StyleSheet của toàn App
-            self.window().setStyleSheet("background-color: #2b2b2b; color: white;")
+            self.window().setStyleSheet("""
+                QWidget {
+                    background-color: #2b2b2b;
+                    color: #f0f0f0;
+                }
+                QTabWidget::pane {
+                    border: 1px solid #3d3d3d;
+                    background: #2b2b2b;
+                    top: -1px;
+                }
+                QTabWidget::tab-bar {
+                    alignment: center;
+                }
+                QTabBar::tab {
+                    background: #3a3a3a;
+                    color: #f0f0f0;
+                    padding: 6px 14px;
+                    margin: 0 3px;
+                    border: 1px solid #3d3d3d;
+                    border-bottom: none;
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                }
+                QTabBar::tab:selected {
+                    background: #505050;
+                    color: #ffffff;
+                    font-weight: bold;
+                }
+            """)
         else:
             self.window().setStyleSheet("")  # Reset về mặc định
 
@@ -333,6 +499,7 @@ class MainWindow(QMainWindow):
         self._live_window = None
         self._live_mode = False
         self._was_timer_active_before_live = False
+        self._mirror_display = True
 
         self.setWindowTitle("Drowsiness Detection")
         self.setGeometry(100, 100, 1200, 700)
@@ -452,7 +619,7 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.update_frame)
 
         self.start_btn.clicked.connect(self.start_camera)
-        self.stop_btn.clicked.connect(self.stop_camera)
+        self.stop_btn.clicked.connect(self.close)
 
     def _update_live_camera_btn_style(self):
         if getattr(self, "_camera_connected", False):
@@ -512,6 +679,12 @@ class MainWindow(QMainWindow):
         self.vision.stop()
         self._set_camera_connected(False)
 
+    def closeEvent(self, event):
+        self.stop_camera()
+        if self._live_window is not None:
+            self._live_window.close()
+        event.accept()
+
     def get_color(cls_id):
         import random
         random.seed(cls_id)
@@ -522,8 +695,17 @@ class MainWindow(QMainWindow):
         )
 
     @staticmethod
-    def _display_class_name(raw_name: str) -> str:
-        # Camera view is from the observer perspective; swap left/right for user-facing meaning.
+    def _display_class_name(class_id: int, names: dict) -> str:
+        # Keep detection logic untouched; only swap text shown on screen.
+        raw_name = names.get(class_id, str(class_id))
+
+        # Primary swap by known class ids in this project.
+        if class_id == 5:
+            return "HeadRight"
+        if class_id == 6:
+            return "HeadLeft"
+
+        # Safety fallback if model/export mapping changes but class names stay the same.
         if raw_name == "HeadLeft":
             return "HeadRight"
         if raw_name == "HeadRight":
@@ -552,6 +734,8 @@ class MainWindow(QMainWindow):
         self.fps_overlay_label.setText(f"FPS: {int(fps)}")
 
         results = self.vision.detect(frame)
+        display_frame = cv2.flip(frame, 1) if self._mirror_display else frame.copy()
+        frame_width = frame.shape[1]
 
         if len(results) > 0:
             boxes = results[0].boxes
@@ -563,7 +747,7 @@ class MainWindow(QMainWindow):
                     cls = int(box.cls[0])
 
                     names = results[0].names
-                    shown_name = self._display_class_name(names[cls])
+                    shown_name = self._display_class_name(cls, names)
                     label = f"{shown_name} {conf:.2f}"
 
                     if cls in [1, 8]:
@@ -573,12 +757,14 @@ class MainWindow(QMainWindow):
                     else:
                         color = (0, 255, 0)  # Green (BGR)
 
-                    shown_name = self._display_class_name(names[cls])
-                    label = f"{shown_name} {conf:.2f}"
+                    draw_x1, draw_x2 = x1, x2
+                    if self._mirror_display:
+                        draw_x1 = frame_width - x2
+                        draw_x2 = frame_width - x1
 
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.rectangle(display_frame, (draw_x1, y1), (draw_x2, y2), color, 2)
 
-                    cv2.putText(frame, label, (x1, y1 - 10),
+                    cv2.putText(display_frame, label, (draw_x1, y1 - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX,
                                 0.6, color, 2)
 
@@ -590,11 +776,11 @@ class MainWindow(QMainWindow):
 
         self._last_frame_bgr = frame.copy()
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame.shape
+        frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame_rgb.shape
         bytes_per_line = ch * w
 
-        qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        qt_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image)
 
         self.camera_label.setPixmap(pixmap.scaled(
