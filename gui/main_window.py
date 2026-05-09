@@ -16,7 +16,6 @@ matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-import numpy as np
 import time
 
 
@@ -37,7 +36,8 @@ class LiveCameraWindow(QWidget):
         self._main = main_window
 
         self.setWindowTitle("Live Camera")
-        self.setMinimumSize(640, 400)
+        self.setMinimumSize(900, 600)
+        self.resize(1000, 700)
 
         layout = QVBoxLayout()
         layout.setSpacing(10)
@@ -46,6 +46,7 @@ class LiveCameraWindow(QWidget):
         self.image_label = QLabel("No camera")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("background-color: #2b2b2b; color: white;")
+        self.image_label.setMinimumSize(860, 540)
         layout.addWidget(self.image_label)
 
         self.timer = QTimer(self)
@@ -132,7 +133,6 @@ class StatisticsTab(QWidget):
         self.ax_pie = self.pie_fig.add_subplot(111)
         layout.addWidget(self.pie_canvas)
 
-        self.stats_counts = {"DANGER": 0, "WARNING": 0, "SAFE": 0}
         self._state_durations = {"DANGER": 0.0, "WARNING": 0.0, "SAFE": 0.0}
         # Render default pie (SAFE 100%) on startup
         self.draw_pie_chart()
@@ -489,15 +489,6 @@ class SettingsTab(QWidget):
                     background-color: #2a3038;
                     color: #e8edf2;
                 }
-                QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
-                    background-color: #3a434f;
-                    border: none;
-                    width: 14px;
-                }
-                QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {
-                    width: 8px;
-                    height: 8px;
-                }
                 QPushButton {
                     background-color: #2f7ae5;
                     color: #ffffff;
@@ -552,15 +543,6 @@ class SettingsTab(QWidget):
                 QAbstractSpinBox, QSlider, QCheckBox, QListWidget {
                     background-color: #ffffff;
                     color: #1b1f24;
-                }
-                QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
-                    background-color: #e7ecf2;
-                    border: none;
-                    width: 14px;
-                }
-                QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {
-                    width: 8px;
-                    height: 8px;
                 }
                 QPushButton {
                     background-color: #2f7ae5;
@@ -627,7 +609,7 @@ class MainWindow(QMainWindow):
         left_panel = QVBoxLayout()
 
         # STATUS
-        self.status_label = QLabel("AWAKE")
+        self.status_label = QLabel("WELCOM")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFixedHeight(100)
         self.status_label.setStyleSheet("""
@@ -726,8 +708,6 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(right_panel, 1)  # tỷ lệ 1
 
-        self.cap = cv2.VideoCapture(0)
-
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
 
@@ -798,15 +778,6 @@ class MainWindow(QMainWindow):
         if self._live_window is not None:
             self._live_window.close()
         event.accept()
-
-    def get_color(cls_id):
-        import random
-        random.seed(cls_id)
-        return (
-            random.randint(0, 255),
-            random.randint(0, 255),
-            random.randint(0, 255)
-        )
 
     @staticmethod
     def _display_class_name(class_id: int, names: dict) -> str:

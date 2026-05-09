@@ -23,7 +23,6 @@ class DrowsinessDetector:
         self.WARNING_BURST_GAP_S = 0.3
         self.YAWN_WARNING_COUNT = 4  # old behavior equivalent: yawns > 3 in 60s
         self.YAWN_WARNING_WINDOW_SECONDS = 60.0
-        self._suppress_next_warning_sound = False
         self._yawn_warning_latched = False
 
         # Alarm hold time (sound only): after leaving DANGER, keep sounding for a bit
@@ -41,7 +40,6 @@ class DrowsinessDetector:
         )
 
         self.enable_alarm_sound = True
-        self._prev_alarm_state = "SAFE"
 
         # Các ngưỡng cấu hình
         self.EYE_CLOSED_THRESHOLD = 2.0  # Nhắm mắt quá ngưỡng -> Danger
@@ -51,12 +49,6 @@ class DrowsinessDetector:
         # Trạng thái hiện tại
         self.current_state = "SAFE"
         self.detail_message = "Focused"
-
-        # Map index class từ model
-        self.CLASS_NAMES = {
-            0: 'OpenEye', 1: 'CloseEye', 2: 'NoYawn', 3: 'Yawn',
-            4: 'Focused', 5: 'HeadLeft', 6: 'HeadRight', 7: 'HeadBack', 8: 'HeadDown'
-        }
 
     def stop_alarm(self):
         pygame.mixer.Channel(0).stop()
@@ -70,7 +62,6 @@ class DrowsinessDetector:
             ch.stop()
             self.danger_alarm_until = 0.0
             self.warning_alarm_until = 0.0
-            self._prev_alarm_state = state
             return
 
         now = time.time()
@@ -113,7 +104,6 @@ class DrowsinessDetector:
                     ch.play(self.sound_warning, loops=-1)
             elif ch.get_busy():
                 ch.stop()
-            self._prev_alarm_state = state
             return
 
         # Danger has highest priority.
@@ -122,7 +112,6 @@ class DrowsinessDetector:
                 if ch.get_busy() and ch.get_sound() != self.sound_danger:
                     ch.stop()
                 ch.play(self.sound_danger, loops=-1)
-            self._prev_alarm_state = "DANGER"
             return
 
         # WARNING should keep sounding (loop) until SAFE + hold window expires.
@@ -131,10 +120,7 @@ class DrowsinessDetector:
                 if ch.get_busy() and ch.get_sound() != self.sound_warning:
                     ch.stop()
                 ch.play(self.sound_warning, loops=-1)
-            self._prev_alarm_state = "WARNING"
             return
-
-        self._prev_alarm_state = state
 
     def update(self, results):
         current_time = time.time()
@@ -199,7 +185,6 @@ class DrowsinessDetector:
                 if self._yawn_window_count >= int(self.YAWN_WARNING_COUNT):
                     self._warning_burst_remaining = int(self.WARNING_BURST_COUNT)
                     self._warning_burst_next_at = current_time  # start immediately
-                    self._suppress_next_warning_sound = True
                     self._yawn_warning_latched = True
                     self._yawn_window_start_time = None
                     self._yawn_window_count = 0
