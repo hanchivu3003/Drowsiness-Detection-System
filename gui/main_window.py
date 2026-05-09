@@ -254,7 +254,6 @@ class SettingsTab(QWidget):
 
         def _make_card():
             card = QFrame()
-            card.setStyleSheet("QFrame { background-color: #f3f6fa; border: 1px solid #e2e8f0; border-radius: 8px; }")
             card_layout = QVBoxLayout()
             card_layout.setContentsMargins(10, 8, 10, 8)
             card_layout.setSpacing(6)
@@ -305,7 +304,6 @@ class SettingsTab(QWidget):
         self.yawn_window_spin.setValue(max(1, int(self.detector.YAWN_WARNING_WINDOW_SECONDS // 60)))
         self.yawn_window_spin.setFixedWidth(64)
         yawn_row_layout.addWidget(self.yawn_window_spin)
-        self.yawn_window_spin.valueChanged.connect(self.update_yawn_warning_window)
 
         yawn_row_layout.addSpacing(12)
         yawn_row_layout.addWidget(QLabel("Count:"))
@@ -354,17 +352,18 @@ class SettingsTab(QWidget):
         # 7. Âm thanh cảnh báo
         sound_card, sound_card_layout = _make_card()
         self.sound_checkbox = QCheckBox("Enable Alarm Sound")
-        self.sound_checkbox.setChecked(True)  # Mặc định bật
+        self.sound_checkbox.setChecked(bool(self.detector.enable_alarm_sound))
         sound_card_layout.addWidget(self.sound_checkbox)
 
         sound_card_layout.addWidget(QLabel("Alarm Volume:"))
         self.vol_slider = QSlider(Qt.Horizontal)
-        self.vol_slider.setValue(70)
-        self.vol_slider.valueChanged.connect(self.update_volume)
+        self.vol_slider.setMinimum(0)
+        self.vol_slider.setMaximum(100)
+        initial_vol = 100
+        if hasattr(self.detector, "sound_warning"):
+            initial_vol = int(self.detector.sound_warning.get_volume() * 100)
+        self.vol_slider.setValue(initial_vol)
         sound_card_layout.addWidget(self.vol_slider)
-        self.update_volume(self.vol_slider.value())
-
-        self.sound_checkbox.stateChanged.connect(self.on_sound_toggled)
         layout.addWidget(sound_card)
 
         # 8. Chế độ tối (Dark Mode)
@@ -388,6 +387,8 @@ class SettingsTab(QWidget):
         layout.addWidget(self.save_status_label)
 
         layout.addStretch()
+        self.toggle_dark_mode(self.dark_mode_checkbox.checkState())
+        self._bind_unsaved_markers()
 
     def _update_eye_label(self, value):
         self.eye_label.setText(f"{value / 10.0}s")
@@ -401,6 +402,20 @@ class SettingsTab(QWidget):
     def _update_warning_delay_label(self, value):
         self.warning_delay_label.setText(f"{value / 10.0}s")
 
+    def _bind_unsaved_markers(self):
+        self.eye_slider.valueChanged.connect(self._mark_unsaved)
+        self.distraction_slider.valueChanged.connect(self._mark_unsaved)
+        self.yawn_window_spin.valueChanged.connect(self._mark_unsaved)
+        self.yawn_count_spin.valueChanged.connect(self._mark_unsaved)
+        self.delay_slider.valueChanged.connect(self._mark_unsaved)
+        self.warning_delay_slider.valueChanged.connect(self._mark_unsaved)
+        self.vol_slider.valueChanged.connect(self._mark_unsaved)
+        self.sound_checkbox.stateChanged.connect(self._mark_unsaved)
+
+    def _mark_unsaved(self, *_):
+        self.save_status_label.setStyleSheet("color: #d97706;")
+        self.save_status_label.setText("Unsaved changes")
+
     def save_settings(self):
         self.update_eye_threshold(self.eye_slider.value())
         self.update_distraction_threshold(self.distraction_slider.value())
@@ -410,6 +425,7 @@ class SettingsTab(QWidget):
         self.update_warning_delay_threshold(self.warning_delay_slider.value())
         self.update_volume(self.vol_slider.value())
         self.on_sound_toggled(self.sound_checkbox.checkState())
+        self.save_status_label.setStyleSheet("color: #2f7d32;")
         self.save_status_label.setText("Settings saved for current session")
 
     def update_eye_threshold(self, value):
@@ -458,16 +474,48 @@ class SettingsTab(QWidget):
         if state == Qt.Checked:
             self.window().setStyleSheet("""
                 QWidget {
-                    background-color: #2b2b2b;
-                    color: #f0f0f0;
+                    background-color: #1f232a;
+                    color: #e8edf2;
+                }
+                QLabel {
+                    color: #e8edf2;
+                }
+                QFrame {
+                    background-color: #2a3038;
+                    border: 1px solid #3a434f;
+                    border-radius: 8px;
+                }
+                QAbstractSpinBox, QSlider, QCheckBox, QListWidget {
+                    background-color: #2a3038;
+                    color: #e8edf2;
+                }
+                QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+                    background-color: #3a434f;
+                    border: none;
+                    width: 14px;
+                }
+                QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {
+                    width: 8px;
+                    height: 8px;
+                }
+                QPushButton {
+                    background-color: #2f7ae5;
+                    color: #ffffff;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 6px 10px;
+                }
+                QPushButton:hover {
+                    background-color: #3d87ef;
                 }
                 QTabWidget::pane {
                     border: 1px solid #3d3d3d;
-                    background: #2b2b2b;
+                    background: #1f232a;
                     top: -1px;
                 }
                 QTabWidget::tab-bar {
                     alignment: center;
+                    left: 0px;
                 }
                 QTabBar::tab {
                     background: #3a3a3a;
@@ -478,6 +526,8 @@ class SettingsTab(QWidget):
                     border-bottom: none;
                     border-top-left-radius: 6px;
                     border-top-right-radius: 6px;
+                    min-width: 86px;
+                    text-align: center;
                 }
                 QTabBar::tab:selected {
                     background: #505050;
@@ -486,13 +536,75 @@ class SettingsTab(QWidget):
                 }
             """)
         else:
-            self.window().setStyleSheet("")  # Reset về mặc định
+            self.window().setStyleSheet("""
+                QWidget {
+                    background-color: #f5f7fa;
+                    color: #1b1f24;
+                }
+                QLabel {
+                    color: #1b1f24;
+                }
+                QFrame {
+                    background-color: #f3f6fa;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 8px;
+                }
+                QAbstractSpinBox, QSlider, QCheckBox, QListWidget {
+                    background-color: #ffffff;
+                    color: #1b1f24;
+                }
+                QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+                    background-color: #e7ecf2;
+                    border: none;
+                    width: 14px;
+                }
+                QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {
+                    width: 8px;
+                    height: 8px;
+                }
+                QPushButton {
+                    background-color: #2f7ae5;
+                    color: #ffffff;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 6px 10px;
+                }
+                QPushButton:hover {
+                    background-color: #4e8ff3;
+                }
+                QTabWidget::pane {
+                    border: 1px solid #c9d3df;
+                    background: #f5f7fa;
+                    top: -1px;
+                }
+                QTabWidget::tab-bar {
+                    alignment: center;
+                    left: 0px;
+                }
+                QTabBar::tab {
+                    background: #e7ecf2;
+                    color: #1b1f24;
+                    padding: 6px 14px;
+                    margin: 0 3px;
+                    border: 1px solid #c9d3df;
+                    border-bottom: none;
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                    min-width: 86px;
+                    text-align: center;
+                }
+                QTabBar::tab:selected {
+                    background: #ffffff;
+                    color: #111111;
+                    font-weight: bold;
+                }
+            """)
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.vision = VisionSystem("E:\\Drowsiness-Detection\\models\\best1.pt").start()
+        self.vision = VisionSystem("D:\\Drowsiness-Detection-System\\models\\best1.pt").start()
         self.drowsiness = DrowsinessDetector()
         self._camera_connected = False
         self._last_frame_bgr = None
@@ -572,6 +684,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_logs, "Logs")
         self.tabs.addTab(self.tab_stats, "Stats")
         self.tabs.setCurrentWidget(self.tab_stats)
+        self.tabs.tabBar().setExpanding(False)
 
         right_panel.addWidget(self.tabs)
 
@@ -620,6 +733,7 @@ class MainWindow(QMainWindow):
 
         self.start_btn.clicked.connect(self.start_camera)
         self.stop_btn.clicked.connect(self.close)
+        self.tab_settings.toggle_dark_mode(self.tab_settings.dark_mode_checkbox.checkState())
 
     def _update_live_camera_btn_style(self):
         if getattr(self, "_camera_connected", False):

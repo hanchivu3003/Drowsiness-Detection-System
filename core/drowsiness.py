@@ -2,7 +2,6 @@ import time
 from pathlib import Path
 
 import pygame
-from collections import deque
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -14,8 +13,8 @@ class DrowsinessDetector:
         self.distraction_start_time = None
         self.yawn_count = 0
         self.last_yawn_time = 0
-        self._yawn_times_60s = deque()
-        self._yawn_burst_triggered_in_window = False
+        self._yawn_window_start_time = None
+        self._yawn_window_count = 0
 
         # Warning burst when yawns exceed threshold in 60s
         self._warning_burst_remaining = 0
@@ -187,35 +186,33 @@ class DrowsinessDetector:
                 self.yawn_count += 1
                 self.last_yawn_time = current_time
 
-                # Track yawns in a configurable sliding window
-                self._yawn_times_60s.append(current_time)
-                while (
-                    len(self._yawn_times_60s) > 0
-                    and (current_time - self._yawn_times_60s[0]) > float(self.YAWN_WARNING_WINDOW_SECONDS)
+                # Fixed counting window: after triggering, restart a new counting session.
+                if (
+                    self._yawn_window_start_time is None
+                    or (current_time - self._yawn_window_start_time) > float(self.YAWN_WARNING_WINDOW_SECONDS)
                 ):
-                    self._yawn_times_60s.popleft()
+                    self._yawn_window_start_time = current_time
+                    self._yawn_window_count = 1
+                else:
+                    self._yawn_window_count += 1
 
-                # Trigger burst once threshold is reached in the rolling 60s window.
-                if len(self._yawn_times_60s) >= int(self.YAWN_WARNING_COUNT) and not self._yawn_burst_triggered_in_window:
-                    self._yawn_burst_triggered_in_window = True
+                if self._yawn_window_count >= int(self.YAWN_WARNING_COUNT):
                     self._warning_burst_remaining = int(self.WARNING_BURST_COUNT)
                     self._warning_burst_next_at = current_time  # start immediately
                     self._suppress_next_warning_sound = True
                     self._yawn_warning_latched = True
+                    self._yawn_window_start_time = None
+                    self._yawn_window_count = 0
 
             # Only raise WARNING state once when the threshold is exceeded.
             if self._yawn_warning_latched:
                 self._yawn_warning_latched = False
                 self.current_state = "WARNING"
-                self.detail_message = f"WARNING: FATIGUE (Yawn count: {self.yawn_count})"
+                self.detail_message = "WARNING: FATIGUE DETECTED FROM YAWNING!"
                 return self.current_state, self.detail_message
 
             # Otherwise: do not force WARNING just because we see a yawn.
             # Continue evaluating other conditions / fall through to SAFE if none.
-
-        # Reset trigger once we fall back below threshold in the rolling window
-        if len(self._yawn_times_60s) < int(self.YAWN_WARNING_COUNT):
-            self._yawn_burst_triggered_in_window = False
 
         # --- TRẠNG THÁI AN TOÀN ---
         self.current_state = "SAFE"
