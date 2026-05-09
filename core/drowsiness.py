@@ -31,7 +31,7 @@ class DrowsinessDetector:
         # Âm thanh (đường dẫn tuyệt đối để chạy được dù cwd khác)
         pygame.mixer.init()
         self.sound_warning = pygame.mixer.Sound(
-            str(_PROJECT_ROOT / "assets" / "sounds" / "warning.wav")
+            str(_PROJECT_ROOT / "assets" / "sounds" / "warning1.mp3")
         )
         self.sound_danger = pygame.mixer.Sound(
             str(_PROJECT_ROOT / "assets" / "sounds" / "danger.wav")
