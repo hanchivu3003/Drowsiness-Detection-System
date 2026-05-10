@@ -586,14 +586,18 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.vision = VisionSystem("D:\\Drowsiness-Detection-System\\models\\best1.pt").start()
+        self.vision = VisionSystem("D:\\Drowsiness-Detection-System\\models\\best5.pt").start()
         self.drowsiness = DrowsinessDetector()
         self._camera_connected = False
         self._last_frame_bgr = None
         self._live_window = None
         self._live_mode = False
         self._was_timer_active_before_live = False
+        # True = lật ngang preview như gương (quay phải thì hình quay cùng phía bạn nhìn). Inference vẫn trên frame gốc; bbox được map lại trong update_frame.
         self._mirror_display = True
+        # Tùy chọn: đảo text HeadLeft <-> HeadRight trên overlay (thêm sau _display_class_name).
+        # Model khác không cần → để False hoặc comment lời gọi _swap_head_lr_for_screen trong update_frame.
+        self._swap_head_lr_labels_display = True
 
         self.setWindowTitle("Drowsiness Detection")
         self.setGeometry(100, 100, 1200, 700)
@@ -781,21 +785,29 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _display_class_name(class_id: int, names: dict) -> str:
-        # Keep detection logic untouched; only swap text shown on screen.
+        # Chỉ ảnh hưởng text trên bbox; không đụng cls hay DrowsinessDetector.
         raw_name = names.get(class_id, str(class_id))
 
-        # Primary swap by known class ids in this project.
         if class_id == 5:
             return "HeadRight"
         if class_id == 6:
             return "HeadLeft"
 
-        # Safety fallback if model/export mapping changes but class names stay the same.
         if raw_name == "HeadLeft":
             return "HeadRight"
         if raw_name == "HeadRight":
             return "HeadLeft"
         return raw_name
+
+    def _swap_head_lr_for_screen(self, label: str) -> str:
+        """Đảo riêng hai nhãn trái/phải khi hiển thị; tắt bằng _swap_head_lr_labels_display hoặc không gọi hàm này."""
+        if not self._swap_head_lr_labels_display:
+            return label
+        if label == "HeadLeft":
+            return "HeadRight"
+        if label == "HeadRight":
+            return "HeadLeft"
+        return label
 
     def update_frame(self):
         import time
@@ -832,7 +844,9 @@ class MainWindow(QMainWindow):
                     cls = int(box.cls[0])
 
                     names = results[0].names
-                    shown_name = self._display_class_name(cls, names)
+                    shown_name = self._swap_head_lr_for_screen(
+                        self._display_class_name(cls, names)
+                    )
                     label = f"{shown_name} {conf:.2f}"
 
                     if cls in [1, 8]:

@@ -43,7 +43,7 @@ class DrowsinessDetector:
 
         # Các ngưỡng cấu hình
         self.EYE_CLOSED_THRESHOLD = 2.0  # Nhắm mắt quá ngưỡng -> Danger
-        self.DISTRACTION_THRESHOLD = 3.0  # Ngoảnh mặt quá 3 giây -> Warning
+        self.DISTRACTION_THRESHOLD = 5.0  # Ngoảnh mặt quá 3 giây -> Warning
         self.YAWN_COOLDOWN = 5.0  # Khoảng cách giữa 2 lần ngáp
 
         # Trạng thái hiện tại
@@ -196,8 +196,6 @@ class DrowsinessDetector:
                 self.detail_message = "WARNING: FATIGUE DETECTED FROM YAWNING!"
                 return self.current_state, self.detail_message
 
-            # Otherwise: do not force WARNING just because we see a yawn.
-            # Continue evaluating other conditions / fall through to SAFE if none.
 
         # --- TRẠNG THÁI AN TOÀN ---
         self.current_state = "SAFE"
