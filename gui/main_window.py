@@ -586,7 +586,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.vision = VisionSystem("D:\\Drowsiness-Detection-System\\models\\best5.pt").start()
+        self.vision = VisionSystem("models/best5.pt").start()
         self.drowsiness = DrowsinessDetector()
         self._camera_connected = False
         self._last_frame_bgr = None
